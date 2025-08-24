@@ -2,113 +2,202 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const si = require('systeminformation');
-const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
+
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => {
-  res.send(`
-<!DOCTYPE html>
-<html lang="en">
+let lastReport = null; // persist most recent report (agent or client)
+
+// Serve a tiny dashboard UI
+app.get('/', (_req, res) => {
+  res.send(`<!DOCTYPE html>
+<html>
 <head>
   <meta charset="utf-8"/>
   <title>FixMyPC-Live</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <style>
-    body{font-family:Consolas,monospace;background:#f7f7f7;color:#111;margin:2em}
-    button{padding:0.6em 1.2em;font-size:1em;background:#0078d4;color:#fff;border:none;cursor:pointer}
-    pre{white-space:pre-wrap;font-size:14px;background:#fff;border:1px solid #ccc;padding:1em}
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, Arial, sans-serif; margin: 2rem; max-width: 1100px; }
+    .row { display: flex; gap: .75rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
+    button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; border-radius: .6rem; border: 1px solid #9993; }
+    pre { background: #0d1117; color: #c9d1d9; padding: 1rem; border-radius: .8rem; overflow-x: auto; max-height: 60vh; }
+    .pill { background:#111827; color:#e5e7eb; padding:.2rem .6rem; border-radius:999px; font-size:.9rem; }
+    .muted { opacity: .75; }
   </style>
 </head>
 <body>
-  <h1>FixMyPC-Live – Auto Scan & Repair</h1>
-  <button id="scanBtn" disabled>Scan & Repair</button>
-  <pre id="report">Click "Scan & Repair" to start…</pre>
+  <h1>FixMyPC-Live Dashboard</h1>
+
+  <div class="row">
+    <div>Connections: <span id="count" class="pill">0</span></div>
+    <span class="muted">(includes browsers + agents)</span>
+  </div>
+
+  <div class="row">
+    <button id="scanAgentBtn" disabled>🖥️ Scan this PC (agent)</button>
+    <button id="scanClientBtn">📱 Scan this device (browser)</button>
+    <button id="downloadBtn" disabled>⬇️ Download JSON</button>
+    <span id="status" class="pill">idle</span>
+  </div>
+
+  <pre id="report">Click a scan button to collect specs...</pre>
+
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    const scanBtn = document.getElementById('scanBtn');
-    const report = document.getElementById('report');
-    socket.on('agent-count', n => scanBtn.disabled = n === 0);
-    scanBtn.onclick = () => socket.emit('scan-repair');
-    socket.on('system-report', data => {
-      const gb = b => (b / 1024 / 1024 / 1024).toFixed(1);
-      let txt = '';
-      txt += 'System Summary\n--------------\n';
-      txt += 'Manufacturer : ' + data.system.manufacturer + '\n';
-      txt += 'Model        : ' + data.system.model + '\n';
-      txt += 'Serial       : ' + data.system.serial + '\n';
-      txt += 'BIOS         : ' + data.bios.version + ' (' + data.bios.releaseDate + ')\n\n';
-      txt += 'Operating System\n----------------\n';
-      txt += 'Name    : ' + data.os.distro + '\n';
-      txt += 'Version : ' + data.os.release + ' (Build ' + data.os.build + ')\n';
-      txt += 'Arch    : ' + data.os.arch + '\n\n';
-      txt += 'Processor\n---------\n';
-      txt += 'Name  : ' + data.cpu.brand + '\n';
-      txt += 'Cores : ' + data.cpu.physicalCores + ' Physical / ' + data.cpu.cores + ' Logical\n\n';
-      txt += 'Memory (RAM)\n------------\n';
-      const usedGB = gb(data.mem.used);
-      const totalGB = gb(data.mem.total);
-      txt += 'Total : ' + totalGB + ' GB\n';
-      txt += 'Used  : ' + usedGB + ' GB (' + Math.round(data.mem.used / data.mem.total * 100) + '%)\n\n';
-      txt += 'Storage\n-------\n';
-      data.fs.forEach(f => {
-        txt += f.mount + '  ' + totalGB + ' GB total | ' + usedGB + ' GB used | ' + gb(f.available) + ' GB free\n';
-      });
-      if (data.battery.hasBattery) {
-        txt += '\nBattery\n-------\n';
-        txt += 'Design   : ' + (data.battery.designedCapacity / 1000).toFixed(1) + ' Wh\n';
-        txt += 'Charge   : ' + data.battery.percent + '%\n';
-        txt += 'Cycles   : ' + (data.battery.cycleCount || 0) + '\n';
-      }
-      txt += '\nGraphics\nAdapter  : ' + (data.graphics.controllers[0] ? data.graphics.controllers[0].name : 'Intel Iris Xe') + '\n';
-      txt += '\nNetwork\n';
-      data.network.filter(n => n.iface !== 'Loopback').forEach(n => {
-        txt += n.iface + ' | IP ' + n.ip4 + ' | MAC ' + n.mac + '\n';
-      });
-      txt += '\nRecent System Errors\n--------------------\n';
-      const errs = data.eventErrors.split('\n').filter(l => l.trim()).slice(0, 5);
-      txt += errs.join('\n');
-      report.textContent = txt;
+    const countEl = document.getElementById('count');
+    const scanAgentBtn = document.getElementById('scanAgentBtn');
+    const scanClientBtn = document.getElementById('scanClientBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const statusEl = document.getElementById('status');
+    const reportEl = document.getElementById('report');
+
+    let connections = 0;
+    let lastData = null;
+
+    function enableDownloadIf(data){
+      if (data) downloadBtn.disabled = false;
+    }
+
+    // Agent count (we're just counting all socket connections here)
+    socket.on('agent-count', n => {
+      connections = n;
+      countEl.textContent = String(n);
+      // Enable agent scan if at least one agent is connected.
+      // NOTE: We can't perfectly distinguish browsers vs agents here without auth;
+      // this demo enables when any connection is present to keep it simple.
+      scanAgentBtn.disabled = (n === 0);
     });
+
+    // Status logs
+    socket.on('log', msg => {
+      if (typeof msg === 'string' && msg.startsWith('agent:')) {
+        statusEl.textContent = msg.replace('agent:', '');
+      }
+    });
+
+    // Receive an agent-based system report
+    socket.on('system-report', data => {
+      statusEl.textContent = 'scan-complete (agent)';
+      lastData = { source: 'agent', at: new Date().toISOString(), data };
+      reportEl.textContent = JSON.stringify(lastData, null, 2);
+      enableDownloadIf(lastData);
+    });
+
+    // Receive a client/browser-based report
+    socket.on('client-report', data => {
+      statusEl.textContent = 'scan-complete (browser)';
+      lastData = { source: 'browser', at: new Date().toISOString(), data };
+      reportEl.textContent = JSON.stringify(lastData, null, 2);
+      enableDownloadIf(lastData);
+    });
+
+    // Buttons
+    scanAgentBtn.addEventListener('click', () => {
+      statusEl.textContent = 'scanning (agent)...';
+      socket.emit('scan-now');
+    });
+
+    scanClientBtn.addEventListener('click', async () => {
+      statusEl.textContent = 'scanning (browser)...';
+      const data = await collectBrowserSpecs();
+      socket.emit('client-report', data);
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      window.location.href = '/download';
+    });
+
+    // Minimal browser/mobile spec collector (works on phones & desktop)
+    async function collectBrowserSpecs() {
+      const nav = navigator;
+      const scr = window.screen;
+      const conn = nav.connection || {};
+      let battery = {};
+      try {
+        if (nav.getBattery) {
+          const b = await nav.getBattery();
+          battery = {
+            charging: b.charging,
+            level: b.level,
+            chargingTime: b.chargingTime,
+            dischargingTime: b.dischargingTime
+          };
+        }
+      } catch {}
+
+      return {
+        userAgent: nav.userAgent,
+        platform: nav.platform,
+        language: nav.language,
+        languages: nav.languages,
+        hardwareConcurrency: nav.hardwareConcurrency,
+        deviceMemory: nav.deviceMemory, // undefined on iOS/Safari
+        maxTouchPoints: nav.maxTouchPoints,
+        screen: {
+          width: scr.width,
+          height: scr.height,
+          availWidth: scr.availWidth,
+          availHeight: scr.availHeight,
+          colorDepth: scr.colorDepth,
+          pixelRatio: window.devicePixelRatio
+        },
+        network: {
+          downlink: conn.downlink,
+          effectiveType: conn.effectiveType,
+          rtt: conn.rtt,
+          saveData: conn.saveData
+        },
+        battery
+      };
+    }
   </script>
 </body>
-</html>
-  `);
+</html>`);
 });
 
+// naive connection count
+let connections = 0;
 io.on('connection', socket => {
-  console.log('🔗 Agent connected');
-  socket.on('scan-repair', async () => {
-    console.log('🔧 Auto-repair started');
-    let log = '';
-    try {
-      if (os.platform() === 'win32') {
-        log += 'Running sfc /scannow…\n';
-        log += require('child_process').execSync('sfc /scannow', { encoding: 'utf8' });
-        log += 'Running DISM RestoreHealth…\n';
-        log += require('child_process').execSync('dism /online /cleanup-image /restorehealth', { encoding: 'utf8' });
-        log += 'Updating drivers…\n';
-        log += require('child_process').execSync('winget upgrade --all --accept-source-agreements --silent', { encoding: 'utf8' });
-      }
-      if (os.platform() === 'linux') {
-        log += 'Updating packages…\n';
-        log += require('child_process').execSync('sudo apt update && sudo apt upgrade -y', { encoding: 'utf8' });
-      }
-      if (os.platform() === 'android') {
-        log += 'Clearing caches…\n';
-        require('child_process').execSync('pm clear-cache com.google.android.gms', { encoding: 'utf8' });
-      }
-    } catch (e) {
-      log += '⚠️ ' + e.message;
-    }
-    socket.emit('log', log);
+  connections++;
+  io.emit('agent-count', connections);
+
+  // re-broadcast logs and reports to all listeners (dashboard)
+  socket.on('log', (msg) => io.emit('log', msg));
+
+  socket.on('system-report', (data) => {
+    lastReport = { source: 'agent', at: new Date().toISOString(), data };
+    io.emit('system-report', data);
+  });
+
+  socket.on('client-report', (data) => {
+    lastReport = { source: 'browser', at: new Date().toISOString(), data };
+    io.emit('client-report', data);
+  });
+
+  socket.on('scan-now', () => io.emit('scan-now'));
+
+  socket.on('disconnect', () => {
+    connections--;
+    io.emit('agent-count', connections);
   });
 });
 
-server.listen(process.env.PORT || 3000, () =>
-  console.log('✅ FixMyPC-Live server on port', process.env.PORT || 3000)
-);
+// download the last report as JSON
+app.get('/download', (req, res) => {
+  if (!lastReport) {
+    return res.status(404).json({ error: 'No report yet. Run a scan first.' });
+  }
+  const filename = `fixmypc-report-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(JSON.stringify(lastReport, null, 2));
+});
+
+server.listen(PORT, () => {
+  console.log(`✅ FixMyPC-Live running on http://localhost:${PORT}`);
+});
