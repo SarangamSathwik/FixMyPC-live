@@ -7,12 +7,24 @@ const SERVER = process.argv[2] || process.env.FMPCL_SERVER || 'http://localhost:
 const LABEL  = (process.argv.includes('--label') ? process.argv[process.argv.indexOf('--label')+1] : '') || process.env.FMPC_LABEL || 'Unnamed-Device';
 const TOKEN  = (process.argv.includes('--token') ? process.argv[process.argv.indexOf('--token')+1] : '') || process.env.FMPC_TOKEN || '';
 
-const socket = io(SERVER, { transports: ['websocket'] });
+const socket = io(SERVER, { transports: ['websocket'], reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000 });
 
 socket.on('connect', () => {
-  console.log('✅ Agent connected to', SERVER);
+  console.log('✅ Agent connected to', SERVER, 'as', LABEL);
   socket.emit('hello', { label: LABEL, platform: process.platform, token: TOKEN });
   socket.emit('log', 'agent:online');
+});
+
+socket.on('connect_error', (err) => {
+  console.error('❌ connect_error:', err && (err.message || err.toString()));
+});
+
+socket.on('reconnect_attempt', (n) => {
+  console.log('… reconnect_attempt #', n);
+});
+
+socket.on('disconnect', (reason) => {
+  console.warn('⚠️  disconnected:', reason);
 });
 
 socket.on('scan-now', scanSystem);
@@ -47,7 +59,9 @@ async function scanSystem() {
     data.deviceLabel = LABEL;
     socket.emit('system-report', data);
     socket.emit('log', 'agent:scan-complete');
+    console.log('✅ scan sent');
   } catch (err) {
+    console.error('❌ scan error:', err && err.message);
     socket.emit('log', 'agent:scan-error ' + (err && err.message));
   }
 }
