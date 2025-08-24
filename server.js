@@ -144,6 +144,7 @@ function toPlainText(d) {
   push('BIOS         : ' + (bios.vendor || '') + ' ' + (bios.version || ''));
   push('OS           : ' + (os.distro || os.platform || '') + ' ' + (os.release || '') + ' (' + (os.arch || '') + ')');
   push('');
+if (d.deviceLabel) push('Device Label : ' + d.deviceLabel);
 
   const cpu = d.cpu || {};
   const mem = d.mem || {};

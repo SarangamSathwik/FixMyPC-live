@@ -1,0 +1,13 @@
+{
+  "name": "fixmypc-agent",
+  "version": "1.0.0",
+  "bin": "agent.js",
+  "pkg": {
+    "targets": ["node18-win-x64"],
+    "outputPath": "dist"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5",
+    "systeminformation": "^5.23.7"
+  }
+}
