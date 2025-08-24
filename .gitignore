@@ -1,1 +1,11 @@
+﻿# Node
 node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Env
+.env
+
+# Build cache
+dist/
+# Note: we DO want to commit EXE/APK in public/downloads, so do NOT ignore them.

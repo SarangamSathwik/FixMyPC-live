@@ -1,6 +1,7 @@
-{
+﻿{
   "name": "fixmypc-agent",
   "version": "1.0.0",
+  "description": "FixMyPC desktop agent",
   "bin": "agent.js",
   "pkg": {
     "targets": ["node18-win-x64"],

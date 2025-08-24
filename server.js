@@ -1,5 +1,4 @@
-// server.js
-const express = require('express');
+﻿const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
@@ -9,23 +8,25 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 const PORT = process.env.PORT || 3000;
 
-let lastTextReport = ''; // latest plain-text report from the agent
+let lastTextReport = '';
 
-// ---- UI (one button, plain text area) ----
+app.use(express.static('public')); // serve /public (for downloads page, EXE/APK)
+
 app.get('/', (_req, res) => {
   res.send(`<!doctype html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>FixMyPC-Live</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: system-ui, Arial, sans-serif; margin: 20px; max-width: 900px; line-height: 1.35; }
+    body { font-family: system-ui, Arial, sans-serif; margin: 20px; max-width: 1000px; line-height: 1.38; }
     .row { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
-    button { padding:.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:.6rem; border:1px solid #9993; }
+    select,button { padding:.55rem .9rem; font-size:1rem; border-radius:.6rem; border:1px solid #9993; }
     .pill { background:#111827; color:#e5e7eb; padding:.15rem .6rem; border-radius:999px; font-size:.9rem; }
-    #report { white-space: pre-wrap; background: transparent; border:1px solid #9993; border-radius:.6rem; padding:12px; min-height:220px; }
+    #report { white-space: pre-wrap; background: transparent; border:1px solid #9993; border-radius:.6rem; padding:12px; min-height:260px; }
+    a.btn { text-decoration:none; display:inline-block; }
     .muted { opacity:.75; }
   </style>
 </head>
@@ -33,33 +34,47 @@ app.get('/', (_req, res) => {
   <h1>FixMyPC-Live</h1>
 
   <div class="row">
-    <div>Agents connected: <span id="count" class="pill">0</span></div>
-    <span class="muted">(button enables when an agent is online)</span>
+    <div>Agents online: <span id="count" class="pill">0</span></div>
+    <a class="btn" href="/downloads.html" target="_blank">Downloads (EXE/APK)</a>
+    <span class="muted">Install the agent once per device; then control scans here.</span>
   </div>
 
   <div class="row">
-    <button id="scanBtn" disabled>🔍 Scan Device (Agent)</button>
+    <select id="agentSelect">
+      <option value="">— All devices —</option>
+    </select>
+    <button id="scanBtn" disabled>🔍 Scan Selected</button>
     <button id="downloadBtn" disabled>⬇️ Download Text</button>
     <span id="status" class="pill">idle</span>
   </div>
 
-  <div id="report">Press “Scan Device (Agent)” to get a plain-text report…</div>
+  <div id="report">Press “Scan Selected” to get a plain-text report…</div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     const countEl = document.getElementById('count');
+    const agentSelect = document.getElementById('agentSelect');
     const scanBtn = document.getElementById('scanBtn');
     const downloadBtn = document.getElementById('downloadBtn');
     const statusEl = document.getElementById('status');
     const reportEl = document.getElementById('report');
 
-    let connections = 0;
-
     socket.on('agent-count', function(n) {
-      connections = n;
       countEl.textContent = String(n);
-      scanBtn.disabled = (n === 0);
+    });
+
+    socket.on('agents', function(list) {
+      const cur = agentSelect.value;
+      agentSelect.innerHTML = '<option value="">— All devices —</option>';
+      list.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = (a.label || 'Unnamed') + ' (' + (a.platform || '?') + ')';
+        agentSelect.appendChild(opt);
+      });
+      scanBtn.disabled = list.length === 0;
+      if ([...agentSelect.options].some(o => o.value === cur)) agentSelect.value = cur;
     });
 
     socket.on('log', function(msg) {
@@ -76,7 +91,9 @@ app.get('/', (_req, res) => {
 
     scanBtn.addEventListener('click', function() {
       statusEl.textContent = 'scanning...';
-      socket.emit('scan-now');
+      const id = agentSelect.value;
+      if (id) socket.emit('scan-one', id);
+      else socket.emit('scan-now');
     });
 
     downloadBtn.addEventListener('click', function() {
@@ -89,23 +106,48 @@ app.get('/', (_req, res) => {
 
 // ---- sockets ----
 let connections = 0;
+const agents = new Map(); // socket.id -> { label, platform }
+
 io.on('connection', socket => {
   connections++;
   io.emit('agent-count', connections);
 
+  socket.on('hello', (info) => {
+    agents.set(socket.id, { label: info?.label || 'Unnamed', platform: info?.platform || '' });
+    broadcastAgents();
+    // auto-scan on connect? uncomment next line:
+    // socket.emit('scan-now');
+  });
+
   socket.on('log', msg => io.emit('log', msg));
 
   socket.on('system-report', data => {
-    lastTextReport = toPlainText(data);
-    io.emit('text-report', lastTextReport);
+    const meta = agents.get(socket.id);
+    if (meta) data.deviceLabel = meta.label;
+    const text = toPlainText(data);
+    lastTextReport = text;
+    io.emit('text-report', text);
   });
 
-  socket.on('scan-now', () => io.emit('scan-now'));
+  socket.on('scan-now', () => {
+    for (const id of agents.keys()) io.to(id).emit('scan-now');
+  });
+
+  socket.on('scan-one', (id) => {
+    if (agents.has(id)) io.to(id).emit('scan-now');
+  });
 
   socket.on('disconnect', () => {
     connections--;
+    agents.delete(socket.id);
     io.emit('agent-count', connections);
+    broadcastAgents();
   });
+
+  function broadcastAgents() {
+    const list = [...agents.entries()].map(([id, a]) => ({ id, label: a.label, platform: a.platform }));
+    io.emit('agents', list);
+  }
 });
 
 // ---- download as text ----
@@ -138,18 +180,18 @@ function toPlainText(d) {
   const bios = d.bios || {};
   const os = d.os || {};
   push('=== DEVICE INFO ===');
+  if (d.deviceLabel) push('Device Label : ' + d.deviceLabel);
   push('Manufacturer : ' + (sys.manufacturer || ''));
   push('Model        : ' + (sys.model || ''));
   push('Serial       : ' + (sys.serial || ''));
   push('BIOS         : ' + (bios.vendor || '') + ' ' + (bios.version || ''));
   push('OS           : ' + (os.distro || os.platform || '') + ' ' + (os.release || '') + ' (' + (os.arch || '') + ')');
   push('');
-if (d.deviceLabel) push('Device Label : ' + d.deviceLabel);
 
   const cpu = d.cpu || {};
   const mem = d.mem || {};
   push('=== CPU & MEMORY ===');
-  push('CPU          : ' + (cpu.manufacturer || '') + ' ' + (cpu.brand || '') + ' @ ' + (cpu.speed || '') + ' GHz | Cores: ' + (cpu.cores || ''));
+  push('CPU          : ' + (cpu.manufacturer || '') + ' ' + (cpu.brand || '') + (cpu.speed ? (' @ ' + cpu.speed + ' GHz') : '') + ' | Cores: ' + (cpu.cores || ''));
   if (mem.total) {
     push('RAM Total    : ' + bytes(mem.total));
     if (mem.used) push('RAM Used     : ' + bytes(mem.used) + ' (' + pct(mem.used, mem.total) + ')');
@@ -210,5 +252,5 @@ if (d.deviceLabel) push('Device Label : ' + d.deviceLabel);
   }
 
   push('=== END OF REPORT ===');
-  return lines.join('\n');
+  return lines.join('\\n');
 }
