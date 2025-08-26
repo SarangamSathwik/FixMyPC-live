@@ -1,5 +1,4 @@
-﻿// server.js
-const express = require('express');
+﻿const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const si = require('systeminformation');
@@ -11,7 +10,6 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
 
-// Serve dashboard
 app.get('/', (req, res) => {
   res.send(`
 <!DOCTYPE html>
@@ -65,10 +63,8 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Serve static agent files
 app.use('/agent', express.static('agent'));
 
-// Socket events
 io.on('connection', socket => {
   console.log('🔗 Agent connected:', socket.id);
   socket.on('system-report', (data) => {
