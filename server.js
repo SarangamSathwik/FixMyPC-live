@@ -3,7 +3,6 @@ const http = require('http');
 const { Server } = require('socket.io');
 const si = require('systeminformation');
 const os = require('os');
-const { execSync } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
@@ -25,19 +24,25 @@ app.get('/', (req, res) => {
 </head>
 <body>
   <h1>FixMyPC-Live – Auto Scan & Repair</h1>
-  <button id="scanBtn" disabled>Scan This Device</button>
+  <button id="scanBtn">Scan This Device</button>
   <pre id="report">Click "Scan This Device" to start…</pre>
 
-  <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io();
     const scanBtn = document.getElementById('scanBtn');
     const report = document.getElementById('report');
 
-    socket.on('agent-count', n => scanBtn.disabled = n === 0);
-    scanBtn.onclick = () => socket.emit('scan-repair');
+    scanBtn.onclick = async () => {
+      report.textContent = 'Scanning...';
+      try {
+        const res = await fetch('/api/scan');
+        const data = await res.json();
+        displayReport(data);
+      } catch (e) {
+        report.textContent = 'Error: ' + e.message;
+      }
+    };
 
-    socket.on('system-report', data => {
+    function displayReport(data) {
       const gb = b => (b / 1024 / 1024 / 1024).toFixed(1);
       let txt = '';
       txt += 'System Summary\\n--------------\\n';
@@ -73,43 +78,46 @@ app.get('/', (req, res) => {
         txt += n.iface + ' | IP ' + n.ip4 + ' | MAC ' + n.mac + '\\n';
       });
       txt += '\\nRecent System Errors\\n--------------------\\n';
-      const errs = data.eventErrors.split('\\n').filter(l => l.trim()).slice(0, 5);
+      const errs = data.eventErrors ? data.eventErrors.split('\\n').filter(l => l.trim()).slice(0, 5) : [];
       txt += errs.join('\\n');
       report.textContent = txt;
-    });
-
-    socket.on('repair-log', (log) => {
-      report.textContent += '\\n--- Repair Log ---\\n' + log;
-    });
+    }
   </script>
 </body>
 </html>
   `);
 });
 
-io.on('connection', socket => {
-  console.log('🔗 Agent connected:', socket.id);
-  socket.on('system-report', (data) => {
-    io.emit('system-report', data, socket.id);
-  });
-  socket.on('repair-request', async () => {
-    let log = '';
-    try {
-      if (os.platform() === 'win32') {
-        log += 'Updating drivers…\n' + execSync('winget upgrade --all --accept-source-agreements --silent', { encoding: 'utf8' });
-        log += 'Running sfc…\n' + execSync('sfc /scannow', { encoding: 'utf8' });
+app.get('/api/scan', async (req, res) => {
+  try {
+    const data = {
+      system: await si.system(),
+      bios: await si.bios(),
+      os: await si.osInfo(),
+      cpu: await si.cpu(),
+      mem: await si.mem(),
+      fs: await si.fsSize(),
+      graphics: await si.graphics(),
+      network: await si.networkInterfaces(),
+      battery: await si.battery(),
+      eventErrors: ''
+    };
+    
+    if (os.platform() === 'win32') {
+      try {
+        data.eventErrors = require('child_process').execSync(
+          'powershell "Get-WinEvent -FilterHashtable @{LogName=\'System\'; Level=2} -MaxEvents 5 | Format-Table -AutoSize"',
+          { encoding: 'utf8' }
+        );
+      } catch (e) {
+        data.eventErrors = 'Event log access denied';
       }
-      if (os.platform() === 'linux') {
-        log += 'Updating packages…\n' + execSync('sudo apt update -y && sudo apt upgrade -y', { encoding: 'utf8' });
-      }
-      if (os.platform() === 'android') {
-        log += 'Clearing caches…\n' + execSync('pm clear-cache com.google.android.gms', { encoding: 'utf8' });
-      }
-    } catch (e) {
-      log += '⚠️ ' + e.message;
     }
-    io.emit('repair-log', log, socket.id);
-  });
+    
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 server.listen(PORT, () => console.log('✅ FixMyPC-Live server on port', PORT));
