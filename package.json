@@ -1,11 +1,16 @@
 {
   "name": "fixmypc-live",
   "version": "1.0.0",
+  "description": "Auto scan, repair, and data rescue website",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "Sathwik",
+  "license": "ISC",
   "dependencies": {
-    "express": "^4.19.2",
-    "socket.io": "^4.7.5",
+    "express": "^4.21.1",
+    "socket.io": "^4.8.0",
     "systeminformation": "^5.23.5"
   }
 }
