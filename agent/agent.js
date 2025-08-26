@@ -65,4 +65,3 @@ async function scanSystem() {
     socket.emit('log', 'agent:scan-error ' + (err && err.message));
   }
 }
-socket.on('connect', () => socket.emit('auto-scan'));
