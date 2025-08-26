@@ -12,96 +12,84 @@ let lastTextReport = '';
 
 app.use(express.static('public')); // serve /public (for downloads page, EXE/APK)
 
-app.get('/', (_req, res) => {
-  res.send(`<!doctype html>
-<html>
+app.get('/', (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>FixMyPC-Live</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, Arial, sans-serif; margin: 20px; max-width: 1000px; line-height: 1.38; }
-    .row { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
-    select,button { padding:.55rem .9rem; font-size:1rem; border-radius:.6rem; border:1px solid #9993; }
-    .pill { background:#111827; color:#e5e7eb; padding:.15rem .6rem; border-radius:999px; font-size:.9rem; }
-    #report { white-space: pre-wrap; background: transparent; border:1px solid #9993; border-radius:.6rem; padding:12px; min-height:260px; }
-    a.btn { text-decoration:none; display:inline-block; }
-    .muted { opacity:.75; }
+    body{font-family:Consolas,monospace;background:#f7f7f7;color:#111;margin:2em}
+    pre{white-space:pre-wrap;font-size:14px;background:#fff;border:1px solid #ccc;padding:1em}
   </style>
 </head>
 <body>
-  <h1>FixMyPC-Live</h1>
-
-  <div class="row">
-    <div>Agents online: <span id="count" class="pill">0</span></div>
-    <a class="btn" href="/downloads.html" target="_blank">Downloads (EXE/APK)</a>
-    <span class="muted">Install the agent once per device; then control scans here.</span>
-  </div>
-
-  <div class="row">
-    <select id="agentSelect">
-      <option value="">— All devices —</option>
-    </select>
-    <button id="scanBtn" disabled>🔍 Scan Selected</button>
-    <button id="downloadBtn" disabled>⬇️ Download Text</button>
-    <span id="status" class="pill">idle</span>
-  </div>
-
-  <div id="report">Press “Scan Selected” to get a plain-text report…</div>
+  <h1>FixMyPC-Live – Auto Scan</h1>
+  <pre id="report">Auto-scanning…</pre>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    const countEl = document.getElementById('count');
-    const agentSelect = document.getElementById('agentSelect');
-    const scanBtn = document.getElementById('scanBtn');
-    const downloadBtn = document.getElementById('downloadBtn');
-    const statusEl = document.getElementById('status');
-    const reportEl = document.getElementById('report');
+    const report = document.getElementById('report');
 
-    socket.on('agent-count', function(n) {
-      countEl.textContent = String(n);
+    // 1. When this page loads, the agent emits "auto-scan"
+    socket.on('connect', () => {
+      socket.emit('auto-scan');
     });
 
-    socket.on('agents', function(list) {
-      const cur = agentSelect.value;
-      agentSelect.innerHTML = '<option value="">— All devices —</option>';
-      list.forEach(a => {
-        const opt = document.createElement('option');
-        opt.value = a.id;
-        opt.textContent = (a.label || 'Unnamed') + ' (' + (a.platform || '?') + ')';
-        agentSelect.appendChild(opt);
+    // 2. Display the full report instantly
+    socket.on('system-report', data => {
+      const gb = b => (b / 1024 / 1024 / 1024).toFixed(1);
+      let txt = '';
+      txt += 'System Summary\\n--------------\\n';
+      txt += 'Manufacturer : ' + data.system.manufacturer + '\\n';
+      txt += 'Model        : ' + data.system.model + '\\n';
+      txt += 'Serial       : ' + data.system.serial + '\\n';
+      txt += 'BIOS         : ' + data.bios.version + ' (' + data.bios.releaseDate + ')\\n\\n';
+
+      txt += 'Operating System\\n----------------\\n';
+      txt += 'Name    : ' + data.os.distro + '\\n';
+      txt += 'Version : ' + data.os.release + ' (Build ' + data.os.build + ')\\n';
+      txt += 'Arch    : ' + data.os.arch + '\\n\\n';
+
+      txt += 'Processor\\n---------\\n';
+      txt += 'Name  : ' + data.cpu.brand + '\\n';
+      txt += 'Cores : ' + data.cpu.physicalCores + ' Physical / ' + data.cpu.cores + ' Logical\\n\\n';
+
+      txt += 'Memory (RAM)\\n------------\\n';
+      const usedGB = gb(data.mem.used);
+      const totalGB = gb(data.mem.total);
+      txt += 'Total : ' + totalGB + ' GB\\n';
+      txt += 'Used  : ' + usedGB + ' GB (' + Math.round(data.mem.used / data.mem.total * 100) + '%)\\n\\n';
+
+      txt += 'Storage\\n-------\\n';
+      data.fs.forEach(f => {
+        txt += f.mount + '  ' + gb(f.size) + ' GB total | ' + gb(f.used) + ' GB used | ' + gb(f.available) + ' GB free\\n';
       });
-      scanBtn.disabled = list.length === 0;
-      if ([...agentSelect.options].some(o => o.value === cur)) agentSelect.value = cur;
-    });
 
-    socket.on('log', function(msg) {
-      if (typeof msg === 'string' && msg.indexOf('agent:') === 0) {
-        statusEl.textContent = msg.replace('agent:', '');
+      if (data.battery.hasBattery) {
+        txt += '\\nBattery\\n-------\\n';
+        txt += 'Design   : ' + (data.battery.designedCapacity / 1000).toFixed(1) + ' Wh\\n';
+        txt += 'Charge   : ' + data.battery.percent + '%\\n';
+        txt += 'Cycles   : ' + (data.battery.cycleCount || 0) + '\\n';
       }
-    });
 
-    socket.on('text-report', function(text) {
-      statusEl.textContent = 'scan-complete';
-      reportEl.textContent = text || 'No data returned.';
-      downloadBtn.disabled = !text;
-    });
+      txt += '\\nGraphics\\nAdapter  : ' + (data.graphics.controllers[0] ? data.graphics.controllers[0].name : 'Intel Iris Xe') + '\\n';
+      txt += '\\nNetwork\\n';
+      data.network.filter(n => n.iface !== 'Loopback').forEach(n => {
+        txt += n.iface + ' | IP ' + n.ip4 + ' | MAC ' + n.mac + '\\n';
+      });
 
-    scanBtn.addEventListener('click', function() {
-      statusEl.textContent = 'scanning...';
-      const id = agentSelect.value;
-      if (id) socket.emit('scan-one', id);
-      else socket.emit('scan-now');
-    });
-
-    downloadBtn.addEventListener('click', function() {
-      window.location.href = '/download';
+      txt += '\\nRecent System Errors\\n--------------------\\n';
+      const errs = data.eventErrors.split('\\n').filter(l => l.trim()).slice(0, 5);
+      txt += errs.join('\\n');
+      report.textContent = txt;
     });
   </script>
 </body>
-</html>`);
+</html>
+  `);
 });
 
 // ---- sockets ----
