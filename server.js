@@ -4,50 +4,41 @@ const http = require('http');
 const { Server } = require('socket.io');
 const si = require('systeminformation');
 const os = require('os');
-const { execSync } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
 
-// Serve the page
+// Serve plain dashboard
 app.get('/', (req, res) => {
   res.send(`
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>FixMyPC-Live – Global Auto-Scan</title>
+  <title>FixMyPC-Live</title>
   <style>
     body{font-family:Consolas,monospace;background:#f7f7f7;color:#111;margin:2em}
     button{padding:0.6em 1.2em;font-size:1em;background:#0078d4;color:#fff;border:none;cursor:pointer}
     pre{white-space:pre-wrap;font-size:14px;background:#fff;border:1px solid #ccc;padding:1em}
-    #report{height:400px;overflow:auto}
   </style>
 </head>
 <body>
-  <h1>FixMyPC-Live – Global Auto-Scan</h1>
-  <button id="scanBtn">Scan This Device</button>
-  <pre id="report">Click scan to start…</pre>
+  <h1>FixMyPC-Live – Auto Scan & Repair</h1>
+  <button id="scanBtn" disabled>Scan This Device</button>
+  <pre id="report">Click "Scan This Device" to start…</pre>
 
+  <script src="/socket.io/socket.io.js"></script>
   <script>
-    const report = document.getElementById('report');
+    const socket = io();
     const scanBtn = document.getElementById('scanBtn');
+    const report = document.getElementById('report');
 
-    // ---------- WebUSB / WebADB fallback ----------
-    async function scanLocal() {
-      // Browser can only scan **itself**
-      try {
-        const res = await fetch('/api/scan');
-        const data = await res.json();
-        displayReport(data);
-      } catch (e) {
-        report.textContent = 'Error: ' + e.message;
-      }
-    }
+    socket.on('agent-count', n => scanBtn.disabled = n === 0);
+    scanBtn.onclick = () => socket.emit('scan-repair');
 
-    async function displayReport(data) {
+    socket.on('system-report', data => {
       const gb = b => (b / 1024 / 1024 / 1024).toFixed(1);
       let txt = '';
       txt += 'System Summary\\n--------------\\n';
@@ -86,36 +77,19 @@ app.get('/', (req, res) => {
       const errs = data.eventErrors.split('\\n').filter(l => l.trim()).slice(0, 5);
       txt += errs.join('\\n');
       report.textContent = txt;
-    }
-
-    scanBtn.onclick = scanLocal;
+    });
   </script>
 </body>
 </html>
   `);
 });
 
-// ---------- Backend API ----------
-app.get('/api/scan', async (req, res) => {
-  try {
-    const data = {
-      system: await si.system(),
-      bios:   await si.bios(),
-      os:     await si.osInfo(),
-      cpu:    await si.cpu(),
-      mem:    await si.mem(),
-      fs:     await si.fsSize(),
-      graphics: await si.graphics(),
-      network:  await si.networkInterfaces(),
-      battery:  await si.battery(),
-      eventErrors: (os.platform() === 'win32')
-        ? require('child_process').execSync('powershell "Get-WinEvent -FilterHashtable @{LogName=\'System\'; Level=2} -MaxEvents 5 | Format-Table -AutoSize"', { encoding: 'utf8' })
-        : ''
-    };
-    res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+// Agent auto-scan on connect
+io.on('connection', socket => {
+  console.log('🔗 Agent connected');
+  socket.on('system-report', (data) => {
+    io.emit('system-report', data);
+  });
 });
 
-server.listen(PORT, () => console.log('✅ Global scan server on port', PORT));
+server.listen(PORT, () => console.log('✅ FixMyPC-Live server on port', PORT));
