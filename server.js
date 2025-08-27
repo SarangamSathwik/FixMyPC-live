@@ -98,7 +98,7 @@ app.get('/', (req, res) => {
     });
 
     socket.on('data-rescue', device => {
-      report.textContent += '\\n--- Data Rescue ---\\nConnected device: ' + device;
+      report.textContent += '\\n--- Data Rescue ---\\nConnected device: ' + device + '\\nAccess granted. For black screen laptop, use phone file manager (e.g., OTG File Manager) to copy files.';
     });
   </script>
 </body>
@@ -129,10 +129,10 @@ io.on('connection', socket => {
           log += 'Updating drivers…\n' + execSync('winget upgrade --all --accept-source-agreements --silent', { encoding: 'utf8' });
           log += 'Running sfc…\n' + execSync('sfc /scannow', { encoding: 'utf8' });
         } catch (e) {
-          log += '⚠️ Repair error: ' + e.message + '\n';
+          log += '⚠️ Repair error: ' + e.message + '\\n';
         }
       } else {
-        log += 'Repairs only supported on Windows.\n';
+        log += 'Repairs only supported on Windows.\\n';
       }
       socket.emit('repair-log', log);
     } catch (e) {
